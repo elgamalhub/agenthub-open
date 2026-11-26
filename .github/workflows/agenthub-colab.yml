@@ -1,0 +1,69 @@
+name: AgentHub Colab (Qwen3.5 35B)
+
+# Hub button for the strong Qwen3.5 35B-A3B model. Real Colab cannot be started
+# by an API without a Google project/OAuth, so this uses a free public GitHub
+# runner instead: same model, one click from the Hub, no card and no Kaggle
+# quota. The backend id stays `colab` so the failover priority is unchanged.
+
+on:
+  repository_dispatch:
+    types: [agenthub-colab-start]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  serve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout runner scripts
+        uses: actions/checkout@v4
+
+      - name: Install cloudflared + build llama.cpp
+        run: |
+          curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
+          sudo install -m 0755 cloudflared /usr/local/bin/cloudflared
+          sudo apt-get -qq update
+          sudo apt-get -qq install -y cmake libssl-dev > /dev/null
+          git clone -q --depth 1 https://github.com/ggml-org/llama.cpp
+          cmake -S llama.cpp -B llama.cpp/build \
+            -DGGML_NATIVE=OFF -DCMAKE_BUILD_TYPE=Release \
+            -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF \
+            -DLLAMA_BUILD_SERVER=ON
+          cmake --build llama.cpp/build -j2 --target llama-server
+
+      - name: Download Qwen3.5 35B-A3B (UD-IQ2_XXS, ~10.7 GB)
+        run: |
+          curl -fL --retry 3 --retry-delay 5 \
+            -o qwen3.5-35b-a3b.gguf \
+            https://huggingface.co/unsloth/Qwen3.5-35B-A3B-GGUF/resolve/main/Qwen3.5-35B-A3B-UD-IQ2_XXS.gguf
+          test "$(stat -c %s qwen3.5-35b-a3b.gguf)" -gt 10000000000
+
+      - name: Serve + tunnel + publish
+        run: |
+          set -euo pipefail
+          nohup llama.cpp/build/bin/llama-server \
+            -m qwen3.5-35b-a3b.gguf \
+            --alias qwen3.5-35b-a3b \
+            --host 0.0.0.0 --port 8080 \
+            --api-key agenthub-free \
+            --jinja -c 2048 -t 4 --no-webui \
+            > llama.log 2>&1 &
+
+          ready=0
+          for i in $(seq 1 300); do
+            if curl --ipv4 -fsS http://127.0.0.1:8080/health > /dev/null 2>&1; then ready=1; break; fi
+            sleep 2
+          done
+          [ "$ready" = 1 ] || { tail -n 120 llama.log; exit 1; }
+
+          curl --ipv4 -fsS -X POST http://127.0.0.1:8080/v1/chat/completions \
+            -H 'Content-Type: application/json' \
+            -H 'Authorization: Bearer agenthub-free' \
+            -d '{"model":"qwen3.5-35b-a3b","messages":[{"role":"user","content":"hi"}],"max_tokens":8,"stream":false}' > /dev/null
+
+          bash cloud/publish.sh colab 8080 10
+          echo "Publisher finished; keeping the runner alive for AgentHub."
+          while true; do sleep 60; done
