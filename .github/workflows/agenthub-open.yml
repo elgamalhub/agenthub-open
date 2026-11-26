@@ -2,6 +2,9 @@ name: AgentHub Open Model (Dolphin 3)
 
 # One click from AgentHub -> repository_dispatch -> this job.
 # Free for public repos. No card, no Kaggle quota, no Molab signup.
+# Everything that must stay alive runs in ONE step: GitHub kills background
+# processes when a step ends, so serve + pull + warm + tunnel + publish + wait
+# all live together here.
 
 on:
   repository_dispatch:
@@ -19,34 +22,33 @@ jobs:
       - name: Checkout runner scripts
         uses: actions/checkout@v4
 
-      - name: Install Ollama
-        run: curl -fsSL https://ollama.com/install.sh | sh
-
-      - name: Install cloudflared
+      - name: Install Ollama + cloudflared
         run: |
+          curl -fsSL https://ollama.com/install.sh | sh
           curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
           sudo install -m 0755 cloudflared /usr/local/bin/cloudflared
 
-      - name: Start Ollama
+      - name: Serve + tunnel + publish
         run: |
+          set -euo pipefail
           export OLLAMA_HOST=0.0.0.0:11434
           export OLLAMA_CONTEXT_LENGTH=8192
           export OLLAMA_KEEP_ALIVE=-1
+          export OLLAMA_ORIGINS='*'
           nohup ollama serve > ollama.log 2>&1 &
-          for i in $(seq 1 60); do
-            curl -fsS http://127.0.0.1:11434/api/tags > /dev/null && break
+
+          ready=0
+          for i in $(seq 1 90); do
+            if curl --ipv4 -fsS http://127.0.0.1:11434/api/tags > /dev/null 2>&1; then ready=1; break; fi
             sleep 2
           done
-          curl -fsS http://127.0.0.1:11434/api/tags
+          [ "$ready" = 1 ] || { tail -n 60 ollama.log; exit 1; }
 
-      - name: Pull the open model
-        run: ollama pull dolphin3
-
-      - name: Serve + tunnel + publish
-        run: |
-          curl -fsS http://127.0.0.1:11434/api/tags
-          curl -fsS -X POST http://127.0.0.1:11434/api/generate \
+          ollama pull dolphin3
+          curl --ipv4 -fsS -X POST http://127.0.0.1:11434/api/generate \
             -H 'Content-Type: application/json' \
-            -d '{"model":"dolphin3","prompt":"hi","stream":false}' > /dev/null
-          bash cloud/publish.sh open 11434 8
+            -d '{"model":"dolphin3","prompt":"hi","stream":false,"max_tokens":8}' > /dev/null
+
+          bash cloud/publish.sh open 11434 10
+          echo "Publisher finished; keeping the runner alive for AgentHub."
           while true; do sleep 60; done
