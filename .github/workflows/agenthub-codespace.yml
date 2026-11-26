@@ -28,10 +28,7 @@ jobs:
           curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
           sudo install -m 0755 cloudflared /usr/local/bin/cloudflared
 
-      - name: Pull Mistral 7B
-        run: ollama pull mistral:7b-instruct
-
-      - name: Serve + tunnel + publish
+      - name: Start Ollama
         run: |
           export OLLAMA_HOST=0.0.0.0:11434
           export OLLAMA_CONTEXT_LENGTH=8192
@@ -41,6 +38,14 @@ jobs:
             curl -fsS http://127.0.0.1:11434/api/tags > /dev/null && break
             sleep 2
           done
+          curl -fsS http://127.0.0.1:11434/api/tags
+
+      - name: Pull Mistral 7B
+        run: ollama pull mistral:7b-instruct
+
+      - name: Serve + tunnel + publish
+        run: |
+          curl -fsS http://127.0.0.1:11434/api/tags
           curl -fsS -X POST http://127.0.0.1:11434/api/generate \
             -H 'Content-Type: application/json' \
             -d '{"model":"mistral:7b-instruct","prompt":"hi","stream":false}' > /dev/null
