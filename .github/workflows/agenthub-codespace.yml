@@ -1,0 +1,48 @@
+name: AgentHub Codespace (Mistral 7B)
+
+# Codespace/Mistral button: one click from AgentHub -> repository_dispatch.
+# Runs on a free public-repo GitHub runner (no Codespaces billing/card).
+# Publishes to the same ntfy topic as the other cloud backends.
+
+on:
+  repository_dispatch:
+    types: [agenthub-codespace-start]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  serve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout runner scripts
+        uses: actions/checkout@v4
+
+      - name: Install Ollama
+        run: curl -fsSL https://ollama.com/install.sh | sh
+
+      - name: Install cloudflared
+        run: |
+          curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
+          sudo install -m 0755 cloudflared /usr/local/bin/cloudflared
+
+      - name: Pull Mistral 7B
+        run: ollama pull mistral:7b-instruct
+
+      - name: Serve + tunnel + publish
+        run: |
+          export OLLAMA_HOST=0.0.0.0:11434
+          export OLLAMA_CONTEXT_LENGTH=8192
+          export OLLAMA_KEEP_ALIVE=-1
+          nohup ollama serve > ollama.log 2>&1 &
+          for i in $(seq 1 60); do
+            curl -fsS http://127.0.0.1:11434/api/tags > /dev/null && break
+            sleep 2
+          done
+          curl -fsS -X POST http://127.0.0.1:11434/api/generate \
+            -H 'Content-Type: application/json' \
+            -d '{"model":"mistral:7b-instruct","prompt":"hi","stream":false}' > /dev/null
+          bash cloud/publish.sh codespace 11434 8
+          while true; do sleep 60; done
