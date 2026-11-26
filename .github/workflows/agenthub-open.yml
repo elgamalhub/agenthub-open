@@ -16,6 +16,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 360
     steps:
+      - name: Checkout runner scripts
+        uses: actions/checkout@v4
+
       - name: Install Ollama
         run: curl -fsSL https://ollama.com/install.sh | sh
 
@@ -40,15 +43,5 @@ jobs:
           curl -fsS -X POST http://127.0.0.1:11434/api/generate \
             -H 'Content-Type: application/json' \
             -d '{"model":"dolphin3","prompt":"hi","stream":false}' > /dev/null
-          nohup cloudflared tunnel --url http://127.0.0.1:11434 > tunnel.log 2>&1 &
-          URL=""
-          for i in $(seq 1 90); do
-            URL=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' tunnel.log | head -n1 || true)
-            [ -n "$URL" ] && break
-            sleep 1
-          done
-          if [ -z "$URL" ]; then echo "no tunnel url"; exit 1; fi
-          curl -fsS -X POST https://ntfy.sh/agenthub-cloud-7f3a91c2 \
-            -H 'Tag: url' --data-binary "cloud|open|$URL"
-          echo "LIVE: $URL"
+          bash cloud/publish.sh open 11434 8
           while true; do sleep 60; done
