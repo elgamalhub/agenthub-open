@@ -1,0 +1,54 @@
+name: AgentHub Open Model (Dolphin 3)
+
+# One click from AgentHub -> repository_dispatch -> this job.
+# Free for public repos. No card, no Kaggle quota, no Molab signup.
+
+on:
+  repository_dispatch:
+    types: [agenthub-open-start]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  serve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Install Ollama
+        run: curl -fsSL https://ollama.com/install.sh | sh
+
+      - name: Install cloudflared
+        run: |
+          curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /usr/local/bin/cloudflared
+          chmod +x /usr/local/bin/cloudflared
+
+      - name: Pull the open model
+        run: ollama pull dolphin3
+
+      - name: Serve + tunnel + publish
+        run: |
+          export OLLAMA_HOST=0.0.0.0:11434
+          export OLLAMA_CONTEXT_LENGTH=8192
+          export OLLAMA_KEEP_ALIVE=-1
+          nohup ollama serve > ollama.log 2>&1 &
+          for i in $(seq 1 60); do
+            curl -fsS http://127.0.0.1:11434/api/tags > /dev/null && break
+            sleep 2
+          done
+          curl -fsS -X POST http://127.0.0.1:11434/api/generate \
+            -H 'Content-Type: application/json' \
+            -d '{"model":"dolphin3","prompt":"hi","stream":false}' > /dev/null
+          nohup cloudflared tunnel --url http://127.0.0.1:11434 > tunnel.log 2>&1 &
+          URL=""
+          for i in $(seq 1 90); do
+            URL=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' tunnel.log | head -n1 || true)
+            [ -n "$URL" ] && break
+            sleep 1
+          done
+          if [ -z "$URL" ]; then echo "no tunnel url"; exit 1; fi
+          curl -fsS -X POST https://ntfy.sh/agenthub-cloud-7f3a91c2 \
+            -H 'Tag: url' --data-binary "cloud|open|$URL"
+          echo "LIVE: $URL"
+          while true; do sleep 60; done
